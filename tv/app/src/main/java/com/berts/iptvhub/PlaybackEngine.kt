@@ -27,11 +27,20 @@ interface PlaybackEngine {
         fun onEnded()
         /** This engine can't decode the stream (e.g. a 4K/HEVC format the box's decoder won't accept). */
         fun onUnsupported(reason: String)
+        /** The video format is known; hdr = HDR10/HLG content. */
+        fun onVideoFormat(hdr: Boolean) {}
     }
 
     val kind: String
     val view: View
     var listener: Listener?
+
+    /** UHD channel: insist on the box's hardware decoder drawing straight to the screen so HDR reaches the TV. */
+    var uhd: Boolean
+
+    /** One line for the player overlay, e.g. "HEVC · 3840×2160 · HDR10". */
+    fun info(): String
+
     fun play(url: String)
     fun stop()
     fun release()
@@ -49,6 +58,7 @@ interface PlaybackEngine {
 class ExoEngine(context: Context) : PlaybackEngine {
     override val kind = PlaybackEngine.EXO
     override var listener: PlaybackEngine.Listener? = null
+    override var uhd: Boolean = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val playerView = PlayerView(context).apply {
@@ -101,11 +111,31 @@ class ExoEngine(context: Context) : PlaybackEngine {
                 handler.removeCallbacks(noPictureCheck)
             }
 
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (videoSize.width > 0) listener?.onVideoFormat(isHdr())
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 if (error.errorCode in 4000..4999) unsupported(error.errorCodeName) // decoder / format errors
                 else listener?.onEnded() // network: let the player retry / follow the hub
             }
         })
+    }
+
+    private fun isHdr(): Boolean {
+        val t = player.videoFormat?.colorInfo?.colorTransfer
+        return t == C.COLOR_TRANSFER_ST2084 || t == C.COLOR_TRANSFER_HLG
+    }
+
+    override fun info(): String {
+        val f = player.videoFormat ?: return "Built-in player · waiting for video"
+        val codec = codecName(f.sampleMimeType ?: f.codecs)
+        val hdr = when (f.colorInfo?.colorTransfer) {
+            C.COLOR_TRANSFER_ST2084 -> "HDR10"
+            C.COLOR_TRANSFER_HLG -> "HLG"
+            else -> "SDR"
+        }
+        return "Built-in player · $codec · ${f.width}×${f.height} · $hdr"
     }
 
     private fun unsupported(reason: String) {
@@ -141,6 +171,11 @@ class ExoEngine(context: Context) : PlaybackEngine {
 class VlcEngine(context: Context) : PlaybackEngine {
     override val kind = PlaybackEngine.VLC
     override var listener: PlaybackEngine.Listener? = null
+    override var uhd: Boolean = false
+
+    private var currentUrl: String? = null
+    private var playedOnce = false
+    private var hwFallback = false
 
     private val layout = VLCVideoLayout(context).apply { keepScreenOn = true }
     private val libVlc = LibVLC(
@@ -160,11 +195,22 @@ class VlcEngine(context: Context) : PlaybackEngine {
             when (event.type) {
                 MediaPlayer.Event.Buffering -> listener?.onBuffering(event.buffering < 100f)
                 MediaPlayer.Event.Playing -> {
+                    playedOnce = true
                     listener?.onBuffering(false)
                     listener?.onPlaying()
                 }
+                MediaPlayer.Event.Vout -> if (event.voutCount > 0) listener?.onVideoFormat(uhd)
                 MediaPlayer.Event.EndReached -> listener?.onEnded()
-                MediaPlayer.Event.EncounteredError -> listener?.onEnded()
+                MediaPlayer.Event.EncounteredError -> {
+                    val url = currentUrl
+                    if (uhd && !hwFallback && !playedOnce && url != null) {
+                        // The box's decoder refused it outright: let VLC decode it itself (HDR may then look flat).
+                        hwFallback = true
+                        startMedia(url)
+                    } else {
+                        listener?.onEnded()
+                    }
+                }
             }
         }
     }
@@ -178,16 +224,38 @@ class VlcEngine(context: Context) : PlaybackEngine {
             return
         }
         if (!attached) {
+            // SurfaceView, no subtitle layer: lets the hardware decoder render directly (needed for HDR).
             player.attachViews(layout, null, false, false)
             attached = true
         }
+        if (url != currentUrl) {
+            currentUrl = url
+            playedOnce = false
+            hwFallback = false
+        }
+        startMedia(url)
+    }
+
+    private fun startMedia(url: String) {
         val media = Media(libVlc, Uri.parse(url))
-        media.setHWDecoderEnabled(true, false)
+        // UHD: force MediaCodec (no silent switch to software decoding, which loses HDR and drops frames at 4K).
+        media.setHWDecoderEnabled(true, uhd && !hwFallback)
         media.addOption(":network-caching=1500")
         player.setMedia(media)
         media.release()
         listener?.onBuffering(true)
         player.play()
+    }
+
+    override fun info(): String {
+        val t = try { player.currentVideoTrack } catch (_: Exception) { null }
+        val decoding = when {
+            !uhd -> "hardware (auto)"
+            hwFallback -> "software (box decoder refused it)"
+            else -> "hardware, direct to screen"
+        }
+        return if (t == null) "VLC engine · $decoding · waiting for video"
+        else "VLC engine · ${codecName(t.codec)} · ${t.width}×${t.height} · $decoding"
     }
 
     override fun stop() {
@@ -202,5 +270,19 @@ class VlcEngine(context: Context) : PlaybackEngine {
         if (attached) player.detachViews()
         player.release()
         libVlc.release()
+    }
+}
+
+/** "video/hevc" / "hevc" / "h265" → "HEVC", etc. */
+internal fun codecName(raw: String?): String {
+    val c = raw?.lowercase().orEmpty()
+    return when {
+        c.contains("hevc") || c.contains("h265") || c.contains("hvc1") || c.contains("hev1") -> "HEVC"
+        c.contains("avc") || c.contains("h264") -> "H.264"
+        c.contains("mpeg2") || c.contains("mpgv") || c.contains("mp2v") -> "MPEG-2"
+        c.contains("av01") || c.contains("av1") -> "AV1"
+        c.contains("vp9") -> "VP9"
+        c.isBlank() -> "?"
+        else -> raw!!.removePrefix("video/").uppercase()
     }
 }

@@ -1,6 +1,8 @@
 package com.berts.iptvhub
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
+import android.os.Build
 import android.content.res.ColorStateList
 import android.os.Bundle
 import android.os.Handler
@@ -53,6 +55,7 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
     private lateinit var oProgress: ProgressBar
     private lateinit var oNext: TextView
     private lateinit var oViewers: TextView
+    private lateinit var oInfo: TextView
 
     private var currentId = -1
     private var pendingZapId = -1
@@ -150,6 +153,8 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         texts.addView(oProgress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)).apply { topMargin = dp(6) })
         oNext = label("", 15f, Neon.MUTED)
         texts.addView(oNext, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        oInfo = label("", 12f, Neon.VIOLET)
+        texts.addView(oInfo, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         overlay.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(18) })
         oViewers = label("", 14f, Neon.GREEN, bold = true).apply { gravity = Gravity.END }
         overlay.addView(oViewers, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(12) })
@@ -169,8 +174,28 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
             hub.config.lastChannelId = id
         }
         retries = 0
-        useEngine(engineFor(id)).play(hub.api.streamUrl(id))
+        val uhd = isUhd(id)
+        requestHdrOutput(uhd)
+        useEngine(engineFor(id)).also { it.uhd = uhd }.play(hub.api.streamUrl(id))
         showOverlay(id)
+    }
+
+    private fun isUhd(id: Int): Boolean {
+        val name = hub.library.byId[id]?.name ?: hub.sync.state?.takeIf { it.streamId == id }?.name ?: ""
+        return UHD_NAME.containsMatchIn(name)
+    }
+
+    /** Ask Android to switch the display to HDR while this window shows HDR video (what VLC's own app does). */
+    private fun requestHdrOutput(on: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val mode = if (on) ActivityInfo.COLOR_MODE_HDR else ActivityInfo.COLOR_MODE_DEFAULT
+        if (window.colorMode != mode) window.colorMode = mode
+    }
+
+    private fun displaySupportsHdr(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        @Suppress("DEPRECATION")
+        return windowManager.defaultDisplay.isHdr
     }
 
     /** Auto: ExoPlayer, except 4K/UHD channels and channels ExoPlayer already failed on, which use built-in VLC. */
@@ -206,6 +231,19 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
     override fun onPlaying() {
         retries = 0
         spinner.visibility = View.GONE
+        handler.postDelayed({ if (overlay.visibility == View.VISIBLE) updateInfo() }, 1_500L)
+    }
+
+    override fun onVideoFormat(hdr: Boolean) {
+        if (hdr) requestHdrOutput(true)
+        if (overlay.visibility == View.VISIBLE) updateInfo()
+    }
+
+    private fun updateInfo() {
+        val e = engine ?: return
+        val display = if (displaySupportsHdr()) "TV accepts HDR" else "TV/box not reporting HDR"
+        val requested = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && window.colorMode == ActivityInfo.COLOR_MODE_HDR) " · HDR output requested" else ""
+        oInfo.text = "${e.info()} · $display$requested"
     }
 
     override fun onEnded() = onStreamInterrupted()
@@ -215,7 +253,7 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         if (hub.config.engine == HubConfig.ENGINE_AUTO && engine?.kind == PlaybackEngine.EXO) {
             hub.config.rememberNeedsVlc(currentId)
             showMessage("Switching to the VLC engine for this channel")
-            useEngine(PlaybackEngine.VLC).play(hub.api.streamUrl(currentId))
+            useEngine(PlaybackEngine.VLC).also { it.uhd = isUhd(currentId) }.play(hub.api.streamUrl(currentId))
         } else {
             showMessage("This box can't decode this channel ($reason). Try Settings → Player: Auto or VLC engine.")
         }
@@ -314,6 +352,7 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         }
         oNext.text = nn?.next?.let { "Next  ${time(it.start)}   ${it.title}" } ?: ""
         hub.sync.state?.let { updateViewers(it) }
+        updateInfo()
         hub.library.refreshEpg()
 
         handler.removeCallbacks(hideOverlay)
