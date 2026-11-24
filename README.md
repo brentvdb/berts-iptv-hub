@@ -14,6 +14,12 @@ One IPTV (Xtream) account, shared with every TV in the house.
 - Pick a channel on any TV, or use Up/Down in the player, and every TV switches to it.
 - Press **Back** in the player on any TV, and every TV leaves the player and the provider connection closes.
 - Favourites (hold **OK** or press **☰ Menu** on a channel) are shared by all TVs.
+- **4K/UHD:** the app has VLC's engine built in. In **Auto** mode (the default), 4K/UHD channels, and any channel
+  the box's built-in decoder can't handle, play through the VLC engine inside the app and stay in sync with the
+  other TVs. The VLC app isn't needed.
+- **TV guide:** for channels your provider has no guide for (e.g. Sky Sports, Premier Sports), the hub merges free
+  public guides from epgshare01 (UK and South Africa by default). Check or fix the matches on the hub's
+  **Guide matching** page at `http://<pc-ip>:8090/epg`.
 - The provider only ever sees one device.
 
 ## Downloads

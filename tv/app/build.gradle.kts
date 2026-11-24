@@ -18,6 +18,17 @@ android {
         targetSdk = 35
         versionCode = buildNumber
         versionName = appVersion
+
+        // TV boxes are ARM; leaving out x86 keeps the built-in VLC engine from doubling the APK size.
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true // compress libVLC inside the APK (smaller download)
+        }
     }
 
     // Fixed key kept in the repo so every build (local or CI) installs over the last one.
@@ -68,4 +79,6 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil:2.7.0")
+    // VLC's engine, built in: plays 4K/HEVC and other streams some boxes' ExoPlayer decoders reject.
+    implementation("org.videolan.android:libvlc-all:3.6.0")
 }

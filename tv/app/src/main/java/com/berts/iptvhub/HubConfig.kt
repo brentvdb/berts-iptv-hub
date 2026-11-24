@@ -23,10 +23,25 @@ class HubConfig(context: Context) {
         get() = prefs.getString("deviceName", null) ?: defaultDeviceName()
         set(value) = prefs.edit().putString("deviceName", value.trim()).apply()
 
-    /** Hand playback to VLC instead of the built-in player. */
-    var useVlc: Boolean
-        get() = prefs.getBoolean("useVlc", false)
-        set(value) = prefs.edit().putBoolean("useVlc", value).apply()
+    /**
+     * Which player to use: auto (ExoPlayer, switching to the built-in VLC engine for 4K/UHD channels or any
+     * channel ExoPlayer can't decode), exo, vlc (built-in VLC engine for everything) or external (VLC app).
+     */
+    var engine: String
+        get() = prefs.getString("engine", null)
+            ?: if (prefs.getBoolean("useVlc", false)) ENGINE_EXTERNAL else ENGINE_AUTO
+        set(value) = prefs.edit().putString("engine", value).apply()
+
+    /** Channels that ExoPlayer couldn't play on this box; auto mode opens them with the VLC engine straight away. */
+    val vlcChannels: Set<Int>
+        get() = prefs.getStringSet("vlcChannels", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() }.toSet()
+
+    fun rememberNeedsVlc(streamId: Int) {
+        val set = prefs.getStringSet("vlcChannels", emptySet()).orEmpty().toMutableSet()
+        if (set.add(streamId.toString())) prefs.edit().putStringSet("vlcChannels", set).apply()
+    }
+
+    fun forgetVlcChannels() = prefs.edit().remove("vlcChannels").apply()
 
     var lastCategory: String
         get() = prefs.getString("lastCategory", MainActivity.CATEGORY_ALL) ?: MainActivity.CATEGORY_ALL
@@ -41,6 +56,13 @@ class HubConfig(context: Context) {
         set(value) = prefs.edit().putString("hubVersion", value).apply()
 
     val isConfigured: Boolean get() = baseUrl.isNotBlank() && password.isNotBlank()
+
+    companion object {
+        const val ENGINE_AUTO = "auto"
+        const val ENGINE_EXO = "exo"
+        const val ENGINE_VLC = "vlc"
+        const val ENGINE_EXTERNAL = "external"
+    }
 
     private fun defaultDeviceName(): String {
         val model = Build.MODEL?.trim().orEmpty()

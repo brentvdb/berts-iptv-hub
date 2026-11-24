@@ -149,6 +149,7 @@ async function refresh() {
       ['Memory', s.memoryMB + ' MB'],
       ['Channel list updated', s.updates.channels ? since(s.updates.channels) : 'not yet'],
       ['EPG updated', s.updates.epg ? since(s.updates.epg) : 'not yet'],
+      ['TV guide', s.guide && s.guide.liveChannels ? `${s.guide.withGuide} of ${s.guide.liveChannels} channels · ${s.guide.fromPublic + s.guide.manual} from public guides · <a href="/epg" style="color:var(--cyan)">matching →</a>` : '<a href="/epg" style="color:var(--cyan)">matching →</a>'],
     ], '');
   } catch (e) {
     document.getElementById('channel').innerHTML = '<span class="bad">Hub not reachable</span>';

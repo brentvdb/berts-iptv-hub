@@ -65,6 +65,8 @@ pointed at `http://127.0.0.1:9900`, then run `run_tests.py`.
 | `CatalogCacheHours` | 6 | How often the channel list (and any other cached API lists) is updated from the provider |
 | `EpgCacheHours` | 12 | How often the full XMLTV guide is updated from the provider |
 | `ShortEpgCacheMinutes` | 10 | Cache time for `get_short_epg` / `get_simple_data_table` |
+| `ExtraEpgEnabled` | true | Use free public XMLTV guides for channels your provider has no guide for |
+| `ExtraEpgSources` | epgshare01 UK1 + ZA1 | Public XMLTV / XMLTV.gz URLs to merge in. Other epgshare01 files: IE1, US2, US_SPORTS1, AU1, … |
 
 **Background updates:** the hub downloads the channel list and EPG from the provider by itself, on the
 schedule above. TVs are always answered straight from the hub's copy, even while an update is running or if
@@ -123,12 +125,22 @@ What the TV app should do:
 | User presses Back in the player | Send `{"cmd":"stop"}` |
 | Player gets end-of-stream or an error | Don't retry blindly. Wait for the next `state` message, which tells you whether to switch or exit |
 
+### Guide matching (`http://<pc-ip>:8090/epg`)
+
+Channels with no guide from your provider are matched to the public guides automatically, by channel ID or by
+channel name (`UK: SKY SPORTS F1 FHD` ⇔ `Sky Sports F1 HD`). The **Guide matching** page shows where every
+channel's guide comes from. From there you can pick the right public channel by hand, put a channel back to
+automatic matching, or set it to "no guide". It asks for the TV password, and your choices are saved in
+`data\epg-map.json`. Event-only channels such as FloRugby have no public guide.
+
 ### 3. EPG worked out on the hub
 
 The hub parses the provider's XMLTV once after each guide update, so TV boxes don't have to:
 
 - `GET /api/epg/now?username=..&password=..[&ids=1,2,3]` returns now/next for every channel (keyed by stream id)
 - `GET /api/epg/{streamId}?username=..&password=..&hours=12` returns listings from one hour ago onwards
+- `GET /api/epg/report` and `POST /api/epg/map` (`{"streamId":1,"sourceChannelId":"SkySp.F1.HD.uk"}`; `""` = none,
+  `null` = automatic) are used by the Guide matching page
 
 Programme times are Unix milliseconds: `{"title","desc","start","end"}`.
 

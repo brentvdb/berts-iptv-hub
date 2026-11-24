@@ -16,11 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import coil.load
 import java.util.Date
 
@@ -28,7 +23,7 @@ import java.util.Date
  * Full-screen live player that follows the hub: if another TV switches channel this one follows,
  * if any TV stops (Back) every TV leaves the player. Up/Down change channel for everyone.
  */
-class PlayerActivity : Activity(), HubSync.Listener {
+class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
 
     companion object {
         const val EXTRA_STREAM_ID = "streamId"
@@ -42,11 +37,12 @@ class PlayerActivity : Activity(), HubSync.Listener {
         private const val ZAP_DELAY_MS = 650L
         private const val LOCAL_SWITCH_GRACE_MS = 2_500L
         private const val MAX_RETRIES = 8
+        private val UHD_NAME = Regex("""(?i)\b(4k|uhd|2160p?)\b|ᵁᴴᴰ""")
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private var player: ExoPlayer? = null
-    private lateinit var playerView: PlayerView
+    private var engine: PlaybackEngine? = null
+    private lateinit var videoContainer: FrameLayout
     private lateinit var spinner: ProgressBar
     private lateinit var message: TextView
     private lateinit var overlay: LinearLayout
@@ -78,19 +74,6 @@ class PlayerActivity : Activity(), HubSync.Listener {
         window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
 
-        player = ExoPlayer.Builder(this).build().also { p ->
-            playerView.player = p
-            p.addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    spinner.visibility = if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
-                    if (playbackState == Player.STATE_READY) retries = 0
-                    if (playbackState == Player.STATE_ENDED) onStreamInterrupted()
-                }
-
-                override fun onPlayerError(error: PlaybackException) = onStreamInterrupted()
-            })
-        }
-
         val id = intent.getIntExtra(EXTRA_STREAM_ID, -1)
         if (id < 0) { finish(); return }
         startStream(id, local = !intent.getBooleanExtra(EXTRA_JOIN, false))
@@ -116,8 +99,8 @@ class PlayerActivity : Activity(), HubSync.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        player?.release()
-        player = null
+        engine?.release()
+        engine = null
         super.onDestroy()
     }
 
@@ -125,12 +108,8 @@ class PlayerActivity : Activity(), HubSync.Listener {
 
     private fun build(): View {
         val root = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
-        playerView = PlayerView(this).apply {
-            useController = false
-            keepScreenOn = true
-            setShutterBackgroundColor(android.graphics.Color.BLACK)
-        }
-        root.addView(playerView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        videoContainer = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.BLACK) }
+        root.addView(videoContainer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         spinner = ProgressBar(this).apply {
             isIndeterminate = true
@@ -190,11 +169,56 @@ class PlayerActivity : Activity(), HubSync.Listener {
             hub.config.lastChannelId = id
         }
         retries = 0
-        val p = player ?: return
-        p.setMediaItem(MediaItem.fromUri(hub.api.streamUrl(id)))
-        p.prepare()
-        p.playWhenReady = true
+        useEngine(engineFor(id)).play(hub.api.streamUrl(id))
         showOverlay(id)
+    }
+
+    /** Auto: ExoPlayer, except 4K/UHD channels and channels ExoPlayer already failed on, which use built-in VLC. */
+    private fun engineFor(id: Int): String {
+        val cfg = hub.config
+        return when (cfg.engine) {
+            HubConfig.ENGINE_VLC -> PlaybackEngine.VLC
+            HubConfig.ENGINE_EXO -> PlaybackEngine.EXO
+            else -> {
+                val name = hub.library.byId[id]?.name ?: hub.sync.state?.takeIf { it.streamId == id }?.name ?: ""
+                if (id in cfg.vlcChannels || UHD_NAME.containsMatchIn(name)) PlaybackEngine.VLC else PlaybackEngine.EXO
+            }
+        }
+    }
+
+    private fun useEngine(kind: String): PlaybackEngine {
+        engine?.let { if (it.kind == kind) return it }
+        engine?.release()
+        videoContainer.removeAllViews()
+        val e = PlaybackEngine.create(kind, this)
+        e.listener = this
+        videoContainer.addView(e.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        engine = e
+        return e
+    }
+
+    // ---- engine events -----------------------------------------------------------------------
+
+    override fun onBuffering(buffering: Boolean) {
+        spinner.visibility = if (buffering) View.VISIBLE else View.GONE
+    }
+
+    override fun onPlaying() {
+        retries = 0
+        spinner.visibility = View.GONE
+    }
+
+    override fun onEnded() = onStreamInterrupted()
+
+    override fun onUnsupported(reason: String) {
+        if (stopping || isFinishing) return
+        if (hub.config.engine == HubConfig.ENGINE_AUTO && engine?.kind == PlaybackEngine.EXO) {
+            hub.config.rememberNeedsVlc(currentId)
+            showMessage("Switching to the VLC engine for this channel")
+            useEngine(PlaybackEngine.VLC).play(hub.api.streamUrl(currentId))
+        } else {
+            showMessage("This box can't decode this channel ($reason). Try Settings → Player: Auto or VLC engine.")
+        }
     }
 
     /** The stream ended or failed: work out from the hub's state whether to follow, retry or leave. */
@@ -209,7 +233,7 @@ class PlayerActivity : Activity(), HubSync.Listener {
                 retries < MAX_RETRIES -> {
                     retries++
                     spinner.visibility = View.VISIBLE
-                    player?.let { it.prepare(); it.playWhenReady = true }
+                    engine?.play(hub.api.streamUrl(currentId))
                 }
                 else -> leave("Lost the stream from the hub")
             }
@@ -232,7 +256,7 @@ class PlayerActivity : Activity(), HubSync.Listener {
     private fun stopEverywhere() {
         stopping = true
         if (!hub.sync.stop()) Thread { runCatching { hub.api.stop() } }.start()
-        player?.stop()
+        engine?.stop()
         finish()
     }
 
@@ -240,7 +264,7 @@ class PlayerActivity : Activity(), HubSync.Listener {
         if (stopping) return
         stopping = true
         Toast.makeText(this, text, Toast.LENGTH_LONG).show()
-        player?.stop()
+        engine?.stop()
         finish()
     }
 

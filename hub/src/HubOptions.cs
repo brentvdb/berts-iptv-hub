@@ -33,6 +33,21 @@ public sealed class HubOptions
     public double EpgCacheHours { get; set; } = 12;
     public double ShortEpgCacheMinutes { get; set; } = 10;
 
+    /// <summary>Use free public XMLTV guides for channels your provider has no guide for.</summary>
+    public bool ExtraEpgEnabled { get; set; } = true;
+
+    /// <summary>Public XMLTV(.gz) URLs. Leave unset for the defaults (UK incl. Sky/Premier/TNT Sports, South Africa).</summary>
+    public string[]? ExtraEpgSources { get; set; }
+
+    public static readonly string[] DefaultExtraEpgSources =
+    {
+        "https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz",
+        "https://epgshare01.online/epgshare01/epg_ripper_ZA1.xml.gz",
+    };
+
+    public IReadOnlyList<string> EffectiveExtraEpgSources =>
+        !ExtraEpgEnabled ? Array.Empty<string>() : ExtraEpgSources is { Length: > 0 } ? ExtraEpgSources : DefaultExtraEpgSources;
+
     public string DataDir { get; set; } = "data";
 
     public string DataDirFull { get; private set; } = "";

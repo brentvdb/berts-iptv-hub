@@ -78,7 +78,7 @@ public sealed class ProviderClient
         if (_entries.TryGetValue(hash, out var existing) && File.Exists(existing.Path))
         {
             if (DateTime.UtcNow - existing.FetchedUtc >= ttl)
-                _ = RefreshInBackgroundAsync(hash, path, extra);
+                _ = RefreshInBackgroundAsync(hash, BuildUrl(path, extra), Describe(path, extra));
             return existing;
         }
 
@@ -122,25 +122,77 @@ public sealed class ProviderClient
         return _entries.TryGetValue(hash, out var e) ? e.FetchedUtc : null;
     }
 
-    private async Task RefreshInBackgroundAsync(string hash, string path, IReadOnlyCollection<KeyValuePair<string, string>> extra)
+    private async Task RefreshInBackgroundAsync(string hash, string url, string what)
     {
         var gate = _locks.GetOrAdd(hash, _ => new SemaphoreSlim(1, 1));
         if (!await gate.WaitAsync(0)) return; // already refreshing
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-            await FetchAsync(hash, BuildUrl(path, extra), cts.Token);
+            await FetchAsync(hash, url, cts.Token);
         }
         catch (Exception ex)
         {
             _log.LogWarning("Background refresh of {What} failed ({Msg}); still serving the copy from {When:u}",
-                Describe(path, extra), ex.Message, _entries.TryGetValue(hash, out var e) ? e.FetchedUtc : DateTime.MinValue);
+                what, ex.Message, _entries.TryGetValue(hash, out var e) ? e.FetchedUtc : DateTime.MinValue);
         }
         finally
         {
             gate.Release();
         }
     }
+
+    // ---- any other URL (public EPG sources) ------------------------------------------------------
+
+    private static string HashUrl(string url) =>
+        "u" + Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant();
+
+    /// <summary>Cached download of a non-provider URL (e.g. a public XMLTV file), refreshed in the background when stale.</summary>
+    public async Task<CacheEntry> GetUrlAsync(string url, TimeSpan ttl, CancellationToken ct)
+    {
+        var hash = HashUrl(url);
+        if (_entries.TryGetValue(hash, out var existing) && File.Exists(existing.Path))
+        {
+            if (DateTime.UtcNow - existing.FetchedUtc >= ttl) _ = RefreshInBackgroundAsync(hash, url, url);
+            return existing;
+        }
+        var gate = _locks.GetOrAdd(hash, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (_entries.TryGetValue(hash, out existing) && File.Exists(existing.Path)) return existing;
+            var entry = await FetchAsync(hash, url, ct);
+            _log.LogInformation("Downloaded {Url} ({KB:N0} KB)", url, entry.Size / 1024);
+            return entry;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task RefreshUrlAsync(string url, TimeSpan ttl, CancellationToken ct)
+    {
+        var hash = HashUrl(url);
+        if (_entries.TryGetValue(hash, out var e) && File.Exists(e.Path) && DateTime.UtcNow - e.FetchedUtc < ttl) return;
+        var gate = _locks.GetOrAdd(hash, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (_entries.TryGetValue(hash, out e) && File.Exists(e.Path) && DateTime.UtcNow - e.FetchedUtc < ttl) return;
+            var entry = await FetchAsync(hash, url, ct);
+            _log.LogInformation("Updated {Url} ({KB:N0} KB)", url, entry.Size / 1024);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public DateTime? LastUpdatedUrl(string url) => _entries.TryGetValue(HashUrl(url), out var e) ? e.FetchedUtc : null;
+
+    /// <summary>Changes whenever the live channel list is re-read (used to know when to rebuild the guide).</summary>
+    public int LiveIndexVersion { get; private set; }
 
     public Task<CacheEntry> GetXmltvAsync(CancellationToken ct) =>
         GetCachedAsync("xmltv.php", Array.Empty<KeyValuePair<string, string>>(), EpgTtl, ct);
@@ -166,6 +218,7 @@ public sealed class ProviderClient
             {
                 _liveIndex = ParseLiveIndex(entry.Path);
                 _liveIndexPath = entry.Path;
+                LiveIndexVersion++;
             }
             return _liveIndex;
         }
@@ -183,6 +236,7 @@ public sealed class ProviderClient
                 {
                     _liveIndex = ParseLiveIndex(entry.Path);
                     _liveIndexPath = entry.Path;
+                    LiveIndexVersion++;
                 }
                 return _liveIndex.TryGetValue(id, out var c) ? c : null;
             }

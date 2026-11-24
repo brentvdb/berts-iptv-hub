@@ -37,9 +37,15 @@ public sealed class CatalogWarmup : BackgroundService
                 try
                 {
                     await _p.RefreshAsync("xmltv.php", Array.Empty<KeyValuePair<string, string>>(), _p.EpgTtl, stop);
-                    await _epg.GetAsync(stop);
                 }
                 catch (Exception ex) when (!stop.IsCancellationRequested) { _log.LogWarning("EPG update failed: {M}", ex.Message); }
+                foreach (var url in _o.EffectiveExtraEpgSources)
+                {
+                    try { await _p.RefreshUrlAsync(url, _p.EpgTtl, stop); }
+                    catch (Exception ex) when (!stop.IsCancellationRequested) { _log.LogWarning("Public guide {Url} update failed: {M}", url, ex.Message); }
+                }
+                try { await _epg.GetAsync(stop); }
+                catch (Exception ex) when (!stop.IsCancellationRequested) { _log.LogWarning("Guide build failed: {M}", ex.Message); }
             }
             try { await Task.Delay(TimeSpan.FromMinutes(Math.Max(1, _o.UpdateCheckMinutes)), stop); } catch { return; }
         }

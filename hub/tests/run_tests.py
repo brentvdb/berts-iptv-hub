@@ -102,7 +102,7 @@ async def main():
     before = prov()["api_calls"]
     for _ in range(5):
         st, body = get(f"/player_api.php?{CRED}&action=get_live_streams")
-    check("live streams served", st == 200 and len(json.loads(body)) == 2)
+    check("live streams served", st == 200 and len(json.loads(body)) == 6)
     check("live streams cached (no extra provider calls)", prov()["api_calls"] == before, prov()["api_calls"] - before)
     st, body = get(f"/xmltv.php?{CRED}")
     check("xmltv served", st == 200 and b"<tv>" in body)
@@ -113,7 +113,7 @@ async def main():
     st, body = get(f"/api/epg/now?{CRED}")
     chans = json.loads(body).get("channels", {}) if st == 200 else {}
     now_ms = time.time() * 1000
-    ok = st == 200 and set(chans) == {"101", "102"} and all(
+    ok = st == 200 and {"101", "102"} <= set(chans) and all(
         c["now"] and c["now"]["start"] <= now_ms < c["now"]["end"] and c["next"]["start"] == c["now"]["end"] for c in chans.values())
     check("EPG now/next for every channel", ok, {k: v["now"]["title"] for k, v in chans.items()} if chans else body[:200])
     st, body = get(f"/api/epg/101?{CRED}&hours=3")
@@ -121,6 +121,29 @@ async def main():
     check("EPG listings for one channel", st == 200 and len(progs) >= 6 and progs[0]["title"].startswith("one.za"), len(progs))
     st, _ = get("/api/epg/now?username=home&password=wrong")
     check("EPG needs the TV password", st == 401)
+
+    # ---- public guide merge (epgshare01-style source) ----
+    def now_title(sid):
+        return chans.get(str(sid), {}).get("now", {}) and chans[str(sid)]["now"]["title"]
+    check("public guide matched by name (UK: SKY SPORTS F1 FHD)", (now_title(103) or "").startswith("Sky Sports F1 HD live"), now_title(103))
+    check("public guide matched by name with symbols (|UK| Premier Sports 1 ᴴᴰ)", (now_title(104) or "").startswith("Premier Sports 1 HD live"), now_title(104))
+    check("public guide matched by epg id", (now_title(105) or "").startswith("Sky Sports Premier League HD live"), now_title(105))
+    check("FloRugby left without a guide", "106" not in chans)
+    st, body = get(f"/api/epg/report?{CRED}")
+    rep = json.loads(body) if st == 200 else {}
+    origins = {c["id"]: c["origin"] for c in rep.get("channels", [])}
+    check("report shows guide origins", origins.get(101) == "provider" and origins.get(103) == "auto" and origins.get(106) == "none", origins)
+    check("report lists public channels for manual matching", any(c["id"] == "SkySp.Golf.HD.uk" for c in rep.get("sourceChannels", [])))
+    st, body = get(f"/api/epg/map?{CRED}", "POST", json.dumps({"streamId": 106, "sourceChannelId": "SkySp.Golf.HD.uk"}).encode())
+    check("manual match saved", st == 200 and json.loads(body)["origin"] == "manual", body[:200])
+    st, body = get(f"/api/epg/now?{CRED}")
+    chans = json.loads(body)["channels"]
+    check("manual match used for now/next", (now_title(106) or "").startswith("Sky Sports Golf HD live"), now_title(106))
+    get(f"/api/epg/map?{CRED}", "POST", json.dumps({"streamId": 106, "sourceChannelId": None}).encode())
+    st, body = get(f"/api/epg/now?{CRED}")
+    check("manual match removed again", "106" not in json.loads(body)["channels"])
+    st, body = get("/epg")
+    check("guide matching page served", st == 200 and b"Guide matching" in body)
 
     # ---- sync + live ----
     inA, inB = [], []

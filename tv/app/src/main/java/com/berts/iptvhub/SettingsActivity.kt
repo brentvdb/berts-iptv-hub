@@ -68,12 +68,23 @@ class SettingsActivity : Activity() {
 
         // Player
         root.addView(section("Player"), params(top = 26))
-        root.addView(label("VLC can play the hub's stream too, but it won't follow channel changes or stops from other TVs.", 15f, Neon.MUTED), params(top = 6))
+        root.addView(label(
+            "Auto uses the fast built-in player and switches to the built-in VLC engine for 4K/UHD channels, " +
+                "or any channel this box can't decode (it remembers them). The VLC app works too, but it can't follow other TVs.",
+            15f, Neon.MUTED
+        ), params(top = 6))
         playerButton = neonButton("", Neon.MAGENTA) {
-            hub.config.useVlc = !hub.config.useVlc
+            val order = listOf(HubConfig.ENGINE_AUTO, HubConfig.ENGINE_EXO, HubConfig.ENGINE_VLC, HubConfig.ENGINE_EXTERNAL)
+            val next = order[(order.indexOf(hub.config.engine) + 1).mod(order.size)]
+            hub.config.engine = next
             render()
         }
         root.addView(playerButton, wrap(top = 10))
+        root.addView(neonButton("Forget channels that needed VLC", Neon.VIOLET) {
+            hub.config.forgetVlcChannels()
+            toast("Auto mode will try the built-in player first again")
+            render()
+        }, wrap(top = 8))
 
         // Channels
         root.addView(section("Channel list & guide"), params(top = 26))
@@ -103,7 +114,13 @@ class SettingsActivity : Activity() {
         val connected = if (hub.sync.connected) "connected" else "not connected"
         hubInfo.text = "${cfg.baseUrl}  ·  ${cfg.hubVersion.ifBlank { "version unknown" }}  ·  $connected"
         deviceInfo.text = "Shown on the hub status page as: ${cfg.deviceName}"
-        playerButton.text = if (cfg.useVlc) "Player: VLC  (press to use the built-in player)" else "Player: built-in  (press to use VLC)"
+        val remembered = cfg.vlcChannels.size
+        playerButton.text = "Player: " + when (cfg.engine) {
+            HubConfig.ENGINE_EXO -> "Built-in player only"
+            HubConfig.ENGINE_VLC -> "Built-in VLC engine for everything"
+            HubConfig.ENGINE_EXTERNAL -> "VLC app (no sync with other TVs)"
+            else -> "Auto (recommended)" + if (remembered > 0) " · $remembered channel(s) on VLC" else ""
+        } + "   (press to change)"
         val lib = hub.library
         refreshInfo.text = buildString {
             append("${lib.channels.size} channels")

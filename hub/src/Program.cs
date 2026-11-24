@@ -26,6 +26,7 @@ builder.Services.AddSingleton<ProviderClient>();
 builder.Services.AddSingleton<StreamHub>();
 builder.Services.AddSingleton<FavoritesStore>();
 builder.Services.AddSingleton<SyncService>();
+builder.Services.AddSingleton<EpgMapStore>();
 builder.Services.AddSingleton<EpgIndex>();
 builder.Services.AddHostedService<CatalogWarmup>();
 
@@ -39,6 +40,7 @@ var favorites = app.Services.GetRequiredService<FavoritesStore>();
 var sync = app.Services.GetRequiredService<SyncService>();
 var clients = app.Services.GetRequiredService<HttpClients>();
 var epg = app.Services.GetRequiredService<EpgIndex>();
+var epgMap = app.Services.GetRequiredService<EpgMapStore>();
 var started = DateTime.UtcNow;
 
 hub.StateChanged += s => sync.Broadcast(s);
@@ -348,20 +350,18 @@ app.MapGet("/api/epg/now", async (HttpContext ctx) =>
     try
     {
         var guide = await epg.GetAsync(ctx.RequestAborted);
-        var live = await provider.GetLiveIndexAsync(ctx.RequestAborted);
         HashSet<int>? only = null;
         var ids = ctx.Request.Query["ids"].ToString();
         if (!string.IsNullOrWhiteSpace(ids))
             only = ids.Split(',').Select(x => int.TryParse(x, out var i) ? i : -1).Where(i => i >= 0).ToHashSet();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var result = new Dictionary<string, object>();
-        foreach (var ch in live.Values)
+        foreach (var (id, list) in guide.ByStream)
         {
-            if (only != null && !only.Contains(ch.Id)) continue;
-            if (string.IsNullOrEmpty(ch.EpgChannelId) || !guide.TryGetValue(ch.EpgChannelId, out var list)) continue;
+            if (only != null && !only.Contains(id)) continue;
             var (n, nx) = EpgIndex.NowNext(list, now);
             if (n is null && nx is null) continue;
-            result[ch.Id.ToString()] = new { now = Prog(n), next = Prog(nx) };
+            result[id.ToString()] = new { now = Prog(n), next = Prog(nx) };
         }
         return Results.Json(new { generated = now, channels = result });
     }
@@ -378,23 +378,76 @@ app.MapGet("/api/epg/{id:int}", async (HttpContext ctx, int id) =>
     if (!opts.ProviderConfigured) return NotConfigured();
     try
     {
-        var live = await provider.GetLiveIndexAsync(ctx.RequestAborted);
-        if (!live.TryGetValue(id, out var ch) || string.IsNullOrEmpty(ch.EpgChannelId))
-            return Results.Json(new { streamId = id, programmes = Array.Empty<object>() });
         var guide = await epg.GetAsync(ctx.RequestAborted);
         var hours = int.TryParse(ctx.Request.Query["hours"], out var h) ? Math.Clamp(h, 1, 36) : 24;
         var from = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeMilliseconds();
         var to = DateTimeOffset.UtcNow.AddHours(hours).ToUnixTimeMilliseconds();
-        var items = guide.TryGetValue(ch.EpgChannelId, out var list)
+        var items = guide.ByStream.TryGetValue(id, out var list)
             ? list.Where(p => p.End > from && p.Start < to).Select(Prog).ToArray()
             : Array.Empty<object?>();
-        return Results.Json(new { streamId = id, programmes = items });
+        guide.Matches.TryGetValue(id, out var match);
+        return Results.Json(new { streamId = id, source = match?.Origin ?? "none", programmes = items });
     }
     catch (Exception ex) when (!ctx.RequestAborted.IsCancellationRequested)
     {
         return Results.Problem("EPG unavailable: " + ex.Message, statusCode: 502);
     }
 });
+
+// Guide matching report for the /epg page: every live channel, where its guide comes from, and all public channels.
+app.MapGet("/api/epg/report", async (HttpContext ctx) =>
+{
+    if (!AuthedQuery(ctx.Request)) return Results.Unauthorized();
+    if (!opts.ProviderConfigured) return NotConfigured();
+    var guide = await epg.GetAsync(ctx.RequestAborted);
+    var live = await provider.GetLiveIndexAsync(ctx.RequestAborted);
+    var favs = favorites.Snapshot().Live.ToHashSet();
+    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var channels = live.Values
+        .OrderByDescending(c => favs.Contains(c.Id)).ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(c =>
+        {
+            guide.Matches.TryGetValue(c.Id, out var m);
+            var nowTitle = guide.ByStream.TryGetValue(c.Id, out var l) ? EpgIndex.NowNext(l, now).now?.Title : null;
+            return new
+            {
+                id = c.Id, name = c.Name, favorite = favs.Contains(c.Id),
+                origin = m?.Origin ?? "none", source = m?.Source, sourceChannelId = m?.SourceChannelId,
+                sourceChannelName = m?.SourceChannelName, now = nowTitle,
+            };
+        });
+    return Results.Json(new
+    {
+        builtAt = guide.BuiltUtc,
+        sources = opts.EffectiveExtraEpgSources.Select(u => new { url = u, label = EpgIndex.SourceLabel(u), updated = provider.LastUpdatedUrl(u) }),
+        summary = new { total = live.Count, provider = guide.FromProvider, publicGuides = guide.FromPublic, manual = guide.Manual },
+        channels,
+        sourceChannels = guide.SourceChannels.Select(sc => new { source = sc.Source, id = sc.Id, name = sc.Name }),
+    });
+});
+
+// Manual choice: {"streamId":123,"sourceChannelId":"SkySp.F1.HD.uk"}; "" = no guide; null = back to automatic.
+app.MapPost("/api/epg/map", async (HttpContext ctx) =>
+{
+    if (!AuthedQuery(ctx.Request)) return Results.Unauthorized();
+    try
+    {
+        using var doc = await JsonDocument.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("streamId", out var sid) || !sid.TryGetInt32(out var streamId)) return Results.BadRequest("streamId required");
+        string? channel = root.TryGetProperty("sourceChannelId", out var sc) && sc.ValueKind == JsonValueKind.String ? sc.GetString() : null;
+        epgMap.Set(streamId, channel);
+        var guide = await epg.GetAsync(ctx.RequestAborted);
+        guide.Matches.TryGetValue(streamId, out var m);
+        return Results.Json(new { streamId, origin = m?.Origin ?? "none", source = m?.Source, sourceChannelName = m?.SourceChannelName });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest("Invalid JSON");
+    }
+});
+
+app.MapGet("/epg", () => Results.Content(EpgPage.Html.Replace("{{VERSION}}", AppInfo.Display), "text/html; charset=utf-8"));
 
 // ---- Status (read-only, no credentials shown) -------------------------------------------------
 
@@ -428,7 +481,14 @@ app.MapGet("/api/status", () =>
             epg = provider.LastUpdated("xmltv.php"),
             channelsEveryHours = opts.CatalogCacheHours,
             epgEveryHours = opts.EpgCacheHours,
-            epgChannels = epg.ChannelCount,
+            guide = new
+            {
+                withGuide = epg.Current.ByStream.Count,
+                fromProvider = epg.Current.FromProvider,
+                fromPublic = epg.Current.FromPublic,
+                manual = epg.Current.Manual,
+                liveChannels = epg.Current.Matches.Count,
+            },
         },
     });
 });

@@ -27,6 +27,23 @@ def xmltv():
     out.append('</tv>')
     return "".join(out).encode()
 
+def public_guide():
+    """A gzipped public XMLTV file like epgshare01's (ids differ from the provider's channel names)."""
+    import datetime as dt, gzip
+    now = dt.datetime.now(dt.timezone.utc)
+    base = now.replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=1)
+    fmt = lambda t: t.strftime("%Y%m%d%H%M%S +0000")
+    chans = [("SkySp.F1.HD.uk", "Sky Sports F1 HD"), ("Premier.Sports.1.HD.uk", "Premier Sports 1 HD"),
+             ("SkySp.PL.HD.uk", "Sky Sports Premier League HD"), ("SkySp.Golf.HD.uk", "Sky Sports Golf HD")]
+    out = ['<?xml version="1.0" encoding="UTF-8"?><tv generator-info-name="fake">']
+    out += [f'<channel id="{i}"><display-name lang="en">{n}</display-name><icon src="http://x/{i}.png"/></channel>' for i, n in chans]
+    for i, n in chans:
+        for k in range(6):
+            s, e = base + dt.timedelta(hours=k), base + dt.timedelta(hours=k + 1)
+            out.append(f'<programme start="{fmt(s)}" stop="{fmt(e)}" channel="{i}"><title>{n} live {k}</title><desc>Live sport</desc></programme>')
+    out.append('</tv>')
+    return gzip.compress("".join(out).encode())
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -58,13 +75,21 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json([{"category_id": "1", "category_name": "Test"}])
             if a == "get_live_streams":
                 return self.send_json([{"stream_id": 101, "name": "Test One", "stream_icon": "http://x/1.png", "epg_channel_id": "one.za", "category_id": "1"},
-                                       {"stream_id": "102", "name": "Test Two", "stream_icon": "", "epg_channel_id": "two.za", "category_id": "1"}])
+                                       {"stream_id": "102", "name": "Test Two", "stream_icon": "", "epg_channel_id": "two.za", "category_id": "1"},
+                                       # no guide from the provider - should come from the public guide by name / id
+                                       {"stream_id": 103, "name": "UK: SKY SPORTS F1 FHD", "stream_icon": "", "epg_channel_id": "", "category_id": "1"},
+                                       {"stream_id": 104, "name": "|UK| Premier Sports 1 ᴴᴰ", "stream_icon": "", "epg_channel_id": None, "category_id": "1"},
+                                       {"stream_id": 105, "name": "Sky Sports PL backup", "stream_icon": "", "epg_channel_id": "SkySp.PL.HD.uk", "category_id": "1"},
+                                       {"stream_id": 106, "name": "FloRugby 01", "stream_icon": "", "epg_channel_id": "", "category_id": "1"}])
             if a == "get_short_epg":
                 return self.send_json({"epg_listings": [{"title": "TmV3cw==", "stream_id": q.get("stream_id")}]})
             return self.send_json([])
         if u.path == "/xmltv.php":
             b = xmltv()
             self.send_response(200); self.send_header("Content-Type", "application/xml"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
+        if u.path == "/public/uk1.xml.gz":
+            b = public_guide()
+            self.send_response(200); self.send_header("Content-Type", "application/gzip"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
         if u.path.startswith("/movie/"):
             data = open("ch1.ts","rb").read()
             rng = self.headers.get("Range")

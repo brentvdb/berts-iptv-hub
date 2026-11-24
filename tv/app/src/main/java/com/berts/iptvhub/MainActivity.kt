@@ -323,7 +323,7 @@ class MainActivity : Activity(), HubSync.Listener, Library.Listener {
     private fun openPlayer(streamId: Int, join: Boolean) {
         autoJoinPending = false
         returningFromPlayer = true // VLC or ours: coming back must not count as "opening the app"
-        if (hub.config.useVlc) {
+        if (hub.config.engine == HubConfig.ENGINE_EXTERNAL) {
             val name = hub.library.byId[streamId]?.name ?: "Live TV"
             val intent = Intent(Intent.ACTION_VIEW)
                 .setDataAndType(Uri.parse(hub.api.streamUrl(streamId)), "video/*")
