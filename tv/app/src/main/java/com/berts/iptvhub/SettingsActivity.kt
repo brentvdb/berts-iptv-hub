@@ -23,6 +23,7 @@ class SettingsActivity : Activity() {
     private lateinit var hubInfo: TextView
     private lateinit var deviceInfo: TextView
     private lateinit var playerButton: Button
+    private lateinit var uhdButton: Button
     private lateinit var refreshInfo: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +81,11 @@ class SettingsActivity : Activity() {
             render()
         }
         root.addView(playerButton, wrap(top = 10))
+        uhdButton = neonButton("", Neon.CYAN) {
+            hub.config.uhdMode = if (hub.config.uhdMode == HubConfig.UHD_CONVERT) HubConfig.UHD_PASSTHROUGH else HubConfig.UHD_CONVERT
+            render()
+        }
+        root.addView(uhdButton, wrap(top = 8))
         root.addView(neonButton("Forget channels that needed VLC", Neon.VIOLET) {
             hub.config.forgetVlcChannels()
             toast("Auto mode will try the built-in player first again")
@@ -121,6 +127,8 @@ class SettingsActivity : Activity() {
             HubConfig.ENGINE_EXTERNAL -> "VLC app (no sync with other TVs)"
             else -> "Auto (recommended)" + if (remembered > 0) " · $remembered channel(s) on VLC" else ""
         } + "   (press to change)"
+        uhdButton.text = "UHD picture: " + (if (cfg.uhdMode == HubConfig.UHD_CONVERT)
+            "Colour-converted, like the VLC app (recommended)" else "HDR passthrough to the TV") + "   (press to change)"
         val lib = hub.library
         refreshInfo.text = buildString {
             append("${lib.channels.size} channels")

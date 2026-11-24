@@ -49,8 +49,14 @@ interface PlaybackEngine {
         const val EXO = "exo"
         const val VLC = "vlc"
 
-        fun create(kind: String, context: Context): PlaybackEngine =
-            if (kind == VLC) VlcEngine(context) else ExoEngine(context)
+        /** Built-in VLC with VLC's own colour conversion (hardware decode, VLC draws the picture) - like the VLC app. */
+        const val VLC_GL = "vlc-gl"
+
+        fun create(kind: String, context: Context): PlaybackEngine = when (kind) {
+            VLC -> VlcEngine(context, convertColours = false)
+            VLC_GL -> VlcEngine(context, convertColours = true)
+            else -> ExoEngine(context)
+        }
     }
 }
 
@@ -168,8 +174,13 @@ class ExoEngine(context: Context) : PlaybackEngine {
 }
 
 /** libVLC (the engine inside VLC): plays what VLC plays, including 4K/HEVC streams ExoPlayer rejects. */
-class VlcEngine(context: Context) : PlaybackEngine {
-    override val kind = PlaybackEngine.VLC
+/**
+ * convertColours = false: the box's decoder draws straight to the screen (HDR passthrough when the box supports it).
+ * convertColours = true: the box decodes, VLC draws the picture and converts wide-colour / HDR video for the screen,
+ * which is how the VLC app shows IPTV UHD channels correctly.
+ */
+class VlcEngine(context: Context, private val convertColours: Boolean) : PlaybackEngine {
+    override val kind = if (convertColours) PlaybackEngine.VLC_GL else PlaybackEngine.VLC
     override var listener: PlaybackEngine.Listener? = null
     override var uhd: Boolean = false
 
@@ -180,7 +191,10 @@ class VlcEngine(context: Context) : PlaybackEngine {
     private val layout = VLCVideoLayout(context).apply { keepScreenOn = true }
     private val libVlc = LibVLC(
         context.applicationContext,
-        arrayListOf("--network-caching=1500", "--live-caching=1500", "--clock-jitter=0", "--clock-synchro=0", "--no-stats"),
+        arrayListOf(
+            "--network-caching=1500", "--live-caching=1500", "--clock-jitter=0", "--clock-synchro=0", "--no-stats",
+            if (convertColours) "--vout=gles2,none" else "--vout=android_display,none",
+        ),
     )
     private val player = MediaPlayer(libVlc)
     private var attached = false
@@ -199,11 +213,11 @@ class VlcEngine(context: Context) : PlaybackEngine {
                     listener?.onBuffering(false)
                     listener?.onPlaying()
                 }
-                MediaPlayer.Event.Vout -> if (event.voutCount > 0) listener?.onVideoFormat(uhd)
+                MediaPlayer.Event.Vout -> if (event.voutCount > 0) listener?.onVideoFormat(uhd && !convertColours)
                 MediaPlayer.Event.EndReached -> listener?.onEnded()
                 MediaPlayer.Event.EncounteredError -> {
                     val url = currentUrl
-                    if (uhd && !hwFallback && !playedOnce && url != null) {
+                    if (uhd && !convertColours && !hwFallback && !playedOnce && url != null) {
                         // The box's decoder refused it outright: let VLC decode it itself (HDR may then look flat).
                         hwFallback = true
                         startMedia(url)
@@ -239,7 +253,14 @@ class VlcEngine(context: Context) : PlaybackEngine {
     private fun startMedia(url: String) {
         val media = Media(libVlc, Uri.parse(url))
         // UHD: force MediaCodec (no silent switch to software decoding, which loses HDR and drops frames at 4K).
-        media.setHWDecoderEnabled(true, uhd && !hwFallback)
+        if (convertColours) {
+            // Hardware decoding, but hand the frames to VLC's renderer instead of straight to the screen.
+            media.setHWDecoderEnabled(true, false)
+            media.addOption(":no-mediacodec-dr")
+            media.addOption(":no-omxil-dr")
+        } else {
+            media.setHWDecoderEnabled(true, uhd && !hwFallback)
+        }
         media.addOption(":network-caching=1500")
         player.setMedia(media)
         media.release()
@@ -250,6 +271,7 @@ class VlcEngine(context: Context) : PlaybackEngine {
     override fun info(): String {
         val t = try { player.currentVideoTrack } catch (_: Exception) { null }
         val decoding = when {
+            convertColours -> "hardware decode · VLC colour conversion"
             !uhd -> "hardware (auto)"
             hwFallback -> "software (box decoder refused it)"
             else -> "hardware, direct to screen"

@@ -175,7 +175,7 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         }
         retries = 0
         val uhd = isUhd(id)
-        requestHdrOutput(uhd)
+        requestHdrOutput(uhd && hub.config.uhdMode == HubConfig.UHD_PASSTHROUGH)
         useEngine(engineFor(id)).also { it.uhd = uhd }.play(hub.api.streamUrl(id))
         showOverlay(id)
     }
@@ -202,14 +202,15 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
     private fun engineFor(id: Int): String {
         val cfg = hub.config
         return when (cfg.engine) {
-            HubConfig.ENGINE_VLC -> PlaybackEngine.VLC
+            HubConfig.ENGINE_VLC -> vlcKind(id)
             HubConfig.ENGINE_EXO -> PlaybackEngine.EXO
-            else -> {
-                val name = hub.library.byId[id]?.name ?: hub.sync.state?.takeIf { it.streamId == id }?.name ?: ""
-                if (id in cfg.vlcChannels || UHD_NAME.containsMatchIn(name)) PlaybackEngine.VLC else PlaybackEngine.EXO
-            }
+            else -> if (id in cfg.vlcChannels || isUhd(id)) vlcKind(id) else PlaybackEngine.EXO
         }
     }
+
+    /** UHD channels use VLC's colour conversion unless Settings asks for HDR passthrough. */
+    private fun vlcKind(id: Int): String =
+        if (isUhd(id) && hub.config.uhdMode == HubConfig.UHD_CONVERT) PlaybackEngine.VLC_GL else PlaybackEngine.VLC
 
     private fun useEngine(kind: String): PlaybackEngine {
         engine?.let { if (it.kind == kind) return it }
@@ -253,7 +254,7 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         if (hub.config.engine == HubConfig.ENGINE_AUTO && engine?.kind == PlaybackEngine.EXO) {
             hub.config.rememberNeedsVlc(currentId)
             showMessage("Switching to the VLC engine for this channel")
-            useEngine(PlaybackEngine.VLC).also { it.uhd = isUhd(currentId) }.play(hub.api.streamUrl(currentId))
+            useEngine(vlcKind(currentId)).also { it.uhd = isUhd(currentId) }.play(hub.api.streamUrl(currentId))
         } else {
             showMessage("This box can't decode this channel ($reason). Try Settings → Player: Auto or VLC engine.")
         }

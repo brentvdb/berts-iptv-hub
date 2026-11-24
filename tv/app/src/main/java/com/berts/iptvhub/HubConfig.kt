@@ -43,6 +43,11 @@ class HubConfig(context: Context) {
 
     fun forgetVlcChannels() = prefs.edit().remove("vlcChannels").apply()
 
+    /** UHD channels: VLC colour conversion (like the VLC app, default) or HDR passthrough to the TV. */
+    var uhdMode: String
+        get() = prefs.getString("uhdMode", UHD_CONVERT) ?: UHD_CONVERT
+        set(value) = prefs.edit().putString("uhdMode", value).apply()
+
     var lastCategory: String
         get() = prefs.getString("lastCategory", MainActivity.CATEGORY_ALL) ?: MainActivity.CATEGORY_ALL
         set(value) = prefs.edit().putString("lastCategory", value).apply()
@@ -62,6 +67,8 @@ class HubConfig(context: Context) {
         const val ENGINE_EXO = "exo"
         const val ENGINE_VLC = "vlc"
         const val ENGINE_EXTERNAL = "external"
+        const val UHD_CONVERT = "convert"
+        const val UHD_PASSTHROUGH = "passthrough"
     }
 
     private fun defaultDeviceName(): String {
