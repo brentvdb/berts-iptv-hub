@@ -120,6 +120,10 @@ class HubApi(private val config: HubConfig) {
     fun streamUrl(streamId: Int): String =
         "${config.baseUrl}/live/${enc(config.username)}/${enc(config.password)}/$streamId.ts"
 
+    /** Live HLS for Chromecast / Cast devices (the hub slices the same stream, no transcoding). */
+    fun hlsUrl(streamId: Int): String =
+        "${config.baseUrl}/hls/${enc(config.username)}/${enc(config.password)}/$streamId/index.m3u8"
+
     fun syncUrl(): HttpUrl = url("/sync", "device" to config.deviceName)
 
     // ---- plumbing ----------------------------------------------------------------------------

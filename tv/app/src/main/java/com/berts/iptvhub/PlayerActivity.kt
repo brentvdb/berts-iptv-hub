@@ -9,7 +9,9 @@ import android.os.Handler
 import android.os.Looper
 import android.text.format.DateFormat
 import android.view.Gravity
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -20,6 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import coil.load
 import java.util.Date
+import kotlin.math.abs
 
 /**
  * Full-screen live player that follows the hub: if another TV switches channel this one follows,
@@ -155,6 +158,18 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
         texts.addView(oNext, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         oInfo = label("", 12f, Neon.VIOLET)
         texts.addView(oInfo, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        if (!hub.tv) {
+            // Phone: on-screen controls (a TV uses the remote instead).
+            val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            buttons.addView(neonButton("✕ Close", Neon.CYAN) { leaveQuietly() })
+            buttons.addView(neonButton("■ Stop all TVs", Neon.MAGENTA) { stopEverywhere() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+            buttons.addView(neonButton("★", Neon.VIOLET) { toggleFavourite() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+            texts.addView(buttons, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+            texts.addView(label("Tap: info · Swipe up/down: change channel (all TVs)", 11f, Neon.MUTED),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        }
         overlay.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(18) })
         oViewers = label("", 14f, Neon.GREEN, bold = true).apply { gravity = Gravity.END }
         overlay.addView(oViewers, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(12) })
@@ -384,18 +399,65 @@ class PlayerActivity : Activity(), HubSync.Listener, PlaybackEngine.Listener {
                 return true
             }
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BOOKMARK -> {
-                val id = currentId
-                val adding = !hub.library.isFavorite(id)
-                hub.library.toggleFavorite(id) { err -> Toast.makeText(this, err, Toast.LENGTH_SHORT).show() }
-                showMessage(if (adding) "★ Added to favourites on all TVs" else "Removed from favourites")
+                toggleFavourite()
                 return true
             }
         }
         return super.onKeyDown(keyCode, event)
     }
 
+    private fun toggleFavourite() {
+        val id = currentId
+        val adding = !hub.library.isFavorite(id)
+        hub.library.toggleFavorite(id) { err -> Toast.makeText(this, err, Toast.LENGTH_SHORT).show() }
+        showMessage(if (adding) "★ Added to favourites on all TVs" else "Removed from favourites")
+    }
+
+    /** Phone: close the player without stopping the TVs. */
+    private fun leaveQuietly() {
+        stopping = true
+        engine?.stop()
+        finish()
+    }
+
+    // ---- touch (phones) ----------------------------------------------------------------------
+
+    private val gestures by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (overlay.visibility == View.VISIBLE) hideOverlay.run() else showOverlay(currentId)
+                return true
+            }
+
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                val dy = e2.y - (e1?.y ?: e2.y)
+                if (abs(dy) > dp(60) && abs(velocityY) > abs(velocityX)) {
+                    zap(if (dy < 0) +1 else -1)
+                    return true
+                }
+                return false
+            }
+        })
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Taps on the overlay's buttons go to the buttons; everything else is a player gesture.
+        val onOverlay = overlay.visibility == View.VISIBLE && inside(overlay, ev)
+        if (!onOverlay) gestures.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun inside(v: View, ev: MotionEvent): Boolean {
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        return ev.rawX >= loc[0] && ev.rawX <= loc[0] + v.width && ev.rawY >= loc[1] && ev.rawY <= loc[1] + v.height
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        stopEverywhere()
+        // TV: Back stops every TV (shared remote behaviour). Phone: just close the player here.
+        if (hub.tv) stopEverywhere() else leaveQuietly()
     }
 }

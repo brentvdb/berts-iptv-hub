@@ -35,13 +35,22 @@
         <activity
             android:name=".PlayerActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|navigation"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.BertsIptvHub.Player" />
 
         <activity
             android:name=".SetupActivity"
             android:windowSoftInputMode="adjustPan"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|navigation" />
+
+        <activity
+            android:name=".PhoneActivity"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|navigation" />
+
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.berts.iptvhub.CastOptionsProvider" />
 
         <activity
             android:name=".SettingsActivity"

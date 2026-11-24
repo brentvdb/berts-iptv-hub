@@ -208,6 +208,44 @@ async def main():
     favs = [m for m in inA if m.get("type") == "favorites"][-1]
     check("favourites synced to all TVs", st == st2 == st3 == 200 and favs["live"] == [102, 555], favs)
 
+    # ---- HLS for Chromecast ----
+    t0 = time.time()
+    st, body = get("/hls/home/tvpass/102/index.m3u8")
+    playlist = body.decode(errors="replace")
+    segs = [l for l in playlist.splitlines() if l.endswith(".ts")]
+    durs = [float(l.split(":")[1].rstrip(",")) for l in playlist.splitlines() if l.startswith("#EXTINF")]
+    check("HLS playlist for Cast devices", st == 200 and playlist.startswith("#EXTM3U") and len(segs) >= 2, f"{len(segs)} segments in {time.time()-t0:.1f}s")
+    check("HLS segments ~4 s, cut at keyframes", durs and all(3.5 <= d <= 6.5 for d in durs), durs)
+    st, seg = get(f"/hls/home/tvpass/102/{segs[-1]}") if segs else (0, b"")
+    pid0, pid1, rai = ts_info(seg) if len(seg) > 600 else (None, None, False)
+    check("HLS segment starts with PAT, PMT, keyframe", st == 200 and pid0 == 0 and rai, (st, pid0, pid1, rai))
+    frames, first, err = ffprobe_frames(bytes(seg), "seg.ts")
+    check("HLS segment decodes on its own", first.startswith("1") or "I" in first, f"frames={frames} first={first} {err}")
+    s2 = json.loads(get(f"/api/state?{CRED}")[1])
+    check("Cast device counts as a viewer of the one stream", s2["mode"] == "live" and s2["streamId"] == 102 and s2["viewers"] >= 1, s2)
+    check("still one provider connection with HLS", prov()["max_seen"] == 1, prov())
+    st, _ = get("/hls/home/WRONG/102/index.m3u8")
+    check("HLS needs the TV password", st == 401)
+
+    # ---- phone → TV casting over sync ----
+    inTv, inPhone = [], []
+    wsTv = await ws_client("LoungeTV", inTv)
+    wsPhone = await ws_client("BrentPhone", inPhone)
+    await wsTv.send(json.dumps({"cmd": "hello", "device": "Lounge TV", "kind": "tv"}))
+    await wsPhone.send(json.dumps({"cmd": "hello", "device": "Brent's phone", "kind": "phone"}))
+    await asyncio.sleep(0.6)
+    devs = [m for m in inPhone if m.get("type") == "devices"][-1]["devices"]
+    tv = next((d for d in devs if d["kind"] == "tv"), None)
+    check("phone sees TVs by name", tv is not None and tv["device"] == "Lounge TV", devs)
+    await wsPhone.send(json.dumps({"cmd": "cast", "target": tv["id"], "streamId": 101}))
+    await asyncio.sleep(1.5)
+    cp = [m for m in inTv if m.get("type") == "castPlay"]
+    check("TV told to play the cast channel", cp and cp[-1]["streamId"] == 101 and cp[-1]["from"] == "Brent's phone", cp)
+    res = [m for m in inPhone if m.get("type") == "castResult"]
+    check("phone told the cast worked", res and res[-1]["ok"] and res[-1]["target"] == "Lounge TV", res)
+    check("hub switched to the cast channel", last_state(inPhone)["streamId"] == 101, last_state(inPhone))
+    await wsTv.close(); await wsPhone.close()
+
     # ---- CPU with 4 TVs ----
     pid = subprocess.run(["pgrep", "-f", "BertsIptvHub.dll"], capture_output=True, text=True).stdout.split()[0]
     def cpu():

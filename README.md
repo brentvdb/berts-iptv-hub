@@ -17,6 +17,11 @@ One IPTV (Xtream) account, shared with every TV in the house.
 - **4K/UHD:** the app has VLC's engine built in. In **Auto** mode (the default), 4K/UHD channels, and any channel
   the box's built-in decoder can't handle, play through the VLC engine inside the app and stay in sync with the
   other TVs. The VLC app isn't needed.
+- **Phones:** the same APK works on Android phones and tablets with a touch layout (search, category chips, swipe
+  to change channel). On a phone, Back just closes the player there; **Stop all TVs** is a separate button.
+- **Casting from the phone:** tap **Cast** and pick either a TV that has the app open (it opens the player and
+  plays the channel, staying in sync) or any **Chromecast / Google Cast** device. For Cast devices the hub slices
+  the same stream into a live HLS playlist (no transcoding), so casting still uses the one provider connection.
 - **TV guide:** for channels your provider has no guide for (e.g. Sky Sports, Premier Sports), the hub merges free
   public guides from epgshare01 (UK and South Africa by default). Check or fix the matches on the hub's
   **Guide matching** page at `http://<pc-ip>:8090/epg`.
@@ -29,7 +34,7 @@ Every push builds both parts. Open **Actions**, pick the latest run, and downloa
 | Workflow | Download | Install on |
 |---|---|---|
 | Hub installer (Windows) | `BertsIptvHub-Setup-<version>.exe` | the server PC |
-| TV app APK (Android) | `BertsIptvHub-TV-<version>.apk` | each Android TV / Google TV box |
+| TV app APK (Android) | `BertsIptvHub-TV-<version>.apk` | each Android TV / Google TV box, and Android phones/tablets |
 
 To make a proper release, run both workflows manually with **Publish a GitHub release** ticked. Both files
 then appear together under **Releases → v<version>**.
@@ -42,6 +47,13 @@ keeps your settings.
 
 On first launch the app searches your network for the hub. Pick it, then enter the TV password you chose in
 the hub installer.
+
+### Away from home
+
+The hub only works on your home network. To use the phone app away from home, install a VPN such as
+**Tailscale** on the server PC and the phone, and use the PC's Tailscale address as the hub address. A 4K
+stream uses roughly 7–11 GB an hour of mobile data. Chromecasting needs the phone to use the hub's
+home-network address, because the Cast device fetches the stream from the hub itself.
 
 ## Versions
 

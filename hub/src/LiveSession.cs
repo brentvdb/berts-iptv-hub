@@ -48,6 +48,7 @@ public sealed class LiveSession
     private DateTime? _emptySince = DateTime.UtcNow;
     private volatile bool _ended;
 
+    private HlsSegmenter? _hls;
     private long _bytesIn;
     private int _reconnects;
     private DateTime? _connectedUtc;
@@ -70,8 +71,21 @@ public sealed class LiveSession
     public int Reconnects => _reconnects;
     public DateTime? ConnectedUtc => _connectedUtc;
 
-    public DateTime? EmptySince { get { lock (_lock) return _emptySince; } }
-    public int Viewers { get { lock (_lock) return _subs.Count; } }
+    public DateTime? EmptySince { get { lock (_lock) return _hls?.Active == true ? null : _emptySince; } }
+    public int Viewers { get { lock (_lock) return _subs.Count + (_hls?.Active == true ? 1 : 0); } }
+
+    /// <summary>HLS output for Cast devices; created the first time a Cast device asks for this channel.</summary>
+    public HlsSegmenter EnableHls()
+    {
+        lock (_lock)
+        {
+            _hls ??= new HlsSegmenter();
+            _emptySince = null;
+            return _hls;
+        }
+    }
+
+    public HlsSegmenter? Hls { get { lock (_lock) return _hls; } }
     public IReadOnlyList<Subscriber> SubscribersSnapshot() { lock (_lock) return _subs.ToList(); }
 
     public void Start() => _ = Task.Run(PumpAsync);
@@ -140,6 +154,8 @@ public sealed class LiveSession
                 _bufferBytes -= _buffer.First.Value.Length;
                 _buffer.RemoveFirst();
             }
+
+            _hls?.Feed(chunk);
 
             for (int i = _subs.Count - 1; i >= 0; i--)
             {
@@ -237,7 +253,7 @@ public sealed class LiveSession
                 break;
             }
 
-            lock (_lock) { _buffer.Clear(); _bufferBytes = 0; }
+            lock (_lock) { _buffer.Clear(); _bufferBytes = 0; _hls?.Reset(); }
             try { await Task.Delay(Math.Min(1000 * failures, 5000), ct); }
             catch (OperationCanceledException) { break; }
             _log.LogInformation("Reconnecting to {Name} (attempt {N})", Info.Name, failures);

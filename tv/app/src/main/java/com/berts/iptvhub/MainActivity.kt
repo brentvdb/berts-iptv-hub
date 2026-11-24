@@ -75,6 +75,12 @@ class MainActivity : Activity(), HubSync.Listener, Library.Listener {
             finish()
             return
         }
+        if (!hub.tv) {
+            // Phones and tablets get the touch layout.
+            startActivity(Intent(this, PhoneActivity::class.java))
+            finish()
+            return
+        }
         currentCategory = hub.config.lastCategory
         setContentView(build())
         hub.sync.start()

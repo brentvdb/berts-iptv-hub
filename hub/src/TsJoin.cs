@@ -71,7 +71,7 @@ public static class TsJoin
         return -1;
     }
 
-    private static int PayloadStart(byte[] d, int i, int afc)
+    internal static int PayloadStart(byte[] d, int i, int afc)
     {
         if ((afc & 0x1) == 0) return -1;
         int off = i + 4;
@@ -81,7 +81,7 @@ public static class TsJoin
         return off < i + P ? off : -1;
     }
 
-    private static int ParsePat(byte[] d, int i, int afc)
+    internal static int ParsePat(byte[] d, int i, int afc)
     {
         int off = PayloadStart(d, i, afc);
         if (off < 0 || off + 8 > i + P || d[off] != 0x00) return -1;
@@ -96,7 +96,7 @@ public static class TsJoin
         return -1;
     }
 
-    private static int ParsePmt(byte[] d, int i, int afc)
+    internal static int ParsePmt(byte[] d, int i, int afc)
     {
         int off = PayloadStart(d, i, afc);
         if (off < 0 || off + 12 > i + P || d[off] != 0x02) return -1;

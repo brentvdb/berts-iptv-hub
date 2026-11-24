@@ -16,6 +16,9 @@ public sealed class SyncService
         public required WebSocket Ws { get; init; }
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public string Device { get; set; } = "unknown";
+        public string Id { get; } = Guid.NewGuid().ToString("N")[..8];
+        /// <summary>"tv" | "phone" | "unknown" (from the app's hello).</summary>
+        public string Kind { get; set; } = "unknown";
         public string Ip { get; init; } = "";
         public DateTime SinceUtc { get; } = DateTime.UtcNow;
     }
@@ -33,7 +36,16 @@ public sealed class SyncService
         _log = log;
     }
 
-    public IEnumerable<object> Clients => _conns.Values.Select(c => new { device = c.Device, ip = c.Ip, since = c.SinceUtc });
+    public IEnumerable<object> Clients => _conns.Values.Select(c => new { device = c.Device, kind = c.Kind, ip = c.Ip, since = c.SinceUtc });
+
+    private object DevicesMessage() => new
+    {
+        type = "devices",
+        devices = _conns.Values.OrderBy(c => c.Device, StringComparer.OrdinalIgnoreCase)
+            .Select(c => new { id = c.Id, device = c.Device, kind = c.Kind }),
+    };
+
+    private void BroadcastDevices() => Broadcast(DevicesMessage());
 
     public static object FavoritesMessage(FavoritesStore.Data d) =>
         new { type = "favorites", live = d.Live, vod = d.Vod, series = d.Series };
@@ -50,8 +62,10 @@ public sealed class SyncService
 
         try
         {
+            await SendAsync(conn, JsonSerializer.SerializeToUtf8Bytes(new { type = "welcome", id = conn.Id }, Json));
             await SendAsync(conn, JsonSerializer.SerializeToUtf8Bytes(_hub.Snapshot(), Json));
             await SendAsync(conn, JsonSerializer.SerializeToUtf8Bytes(FavoritesMessage(_favorites.Snapshot()), Json));
+            BroadcastDevices();
 
             var buf = new byte[8192];
             using var msg = new MemoryStream();
@@ -79,6 +93,7 @@ public sealed class SyncService
         finally
         {
             _conns.TryRemove(id, out _);
+            BroadcastDevices();
             _log.LogInformation("TV left sync: {Device} {Ip} ({N} connected)", conn.Device, conn.Ip, _conns.Count);
         }
     }
@@ -102,6 +117,27 @@ public sealed class SyncService
         {
             case "hello":
                 if (root.TryGetProperty("device", out var d) && d.GetString() is { Length: > 0 } name) c.Device = name;
+                if (root.TryGetProperty("kind", out var k) && k.GetString() is { Length: > 0 } kind) c.Kind = kind;
+                BroadcastDevices();
+                break;
+            case "getDevices":
+                await SendAsync(c, JsonSerializer.SerializeToUtf8Bytes(DevicesMessage(), Json));
+                break;
+            case "cast":
+                // Phone → "play this channel on that TV": switch the hub, then tell the TV to open its player.
+                var castId = ProviderClient.ReadInt(root, "streamId");
+                var targetId = root.TryGetProperty("target", out var t) ? t.GetString() : null;
+                var target = _conns.Values.FirstOrDefault(x => x.Id == targetId);
+                if (castId is int cid && target != null)
+                {
+                    await _hub.StartLiveAsync(cid, $"{c.Device} → {target.Device}", ct);
+                    await SendAsync(target, JsonSerializer.SerializeToUtf8Bytes(new { type = "castPlay", streamId = cid, from = c.Device }, Json));
+                    await SendAsync(c, JsonSerializer.SerializeToUtf8Bytes(new { type = "castResult", ok = true, target = target.Device }, Json));
+                }
+                else
+                {
+                    await SendAsync(c, JsonSerializer.SerializeToUtf8Bytes(new { type = "castResult", ok = false, target = target?.Device ?? "TV" }, Json));
+                }
                 break;
             case "play":
                 var id = ProviderClient.ReadInt(root, "streamId");

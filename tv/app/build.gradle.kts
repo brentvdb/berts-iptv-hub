@@ -81,4 +81,7 @@ dependencies {
     implementation("io.coil-kt:coil:2.7.0")
     // VLC's engine, built in: plays 4K/HEVC and other streams some boxes' ExoPlayer decoders reject.
     implementation("org.videolan.android:libvlc-all:3.6.0")
+    // Phones: cast channels to Chromecast / Google Cast devices (the hub serves HLS for them).
+    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
 }

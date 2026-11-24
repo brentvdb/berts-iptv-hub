@@ -31,6 +31,13 @@ object Neon {
 
 fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+/** True on Android TV / Google TV boxes; false on phones and tablets. */
+fun Context.isTv(): Boolean {
+    val ui = getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+    return ui?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
+        packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
+}
+
 fun Context.appVersion(): String = "v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})"
 
 fun Context.label(text: CharSequence, sizeSp: Float, color: Int, bold: Boolean = false): TextView =

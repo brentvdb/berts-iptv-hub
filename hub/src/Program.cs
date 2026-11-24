@@ -222,6 +222,34 @@ async Task ServeLive(HttpContext ctx, string user, string pass, string file)
 app.MapGet("/live/{user}/{pass}/{file}", (HttpContext ctx, string user, string pass, string file) => ServeLive(ctx, user, pass, file));
 app.MapGet("/{user}/{pass}/{id:int}", (HttpContext ctx, string user, string pass, int id) => ServeLive(ctx, user, pass, id.ToString()));
 
+// ---- HLS for Chromecast / Google Cast (segments of the same relay, no transcoding) --------------
+
+app.MapGet("/hls/{user}/{pass}/{id:int}/index.m3u8", async (HttpContext ctx, string user, string pass, int id) =>
+{
+    ctx.Response.Headers.AccessControlAllowOrigin = "*";
+    if (!Authed(user, pass)) return Results.Unauthorized();
+    if (!opts.ProviderConfigured) return NotConfigured();
+    var hls = await hub.HlsAsync(id, "Cast device " + ctx.Connection.RemoteIpAddress, start: true, ctx.RequestAborted);
+    if (hls is null) return Results.NotFound();
+    // A brand-new stream needs a few seconds before the first segments exist.
+    for (int i = 0; i < 60 && hls.Count < 2 && !ctx.RequestAborted.IsCancellationRequested; i++)
+        await Task.Delay(250, ctx.RequestAborted);
+    hls.Touch();
+    ctx.Response.Headers.CacheControl = "no-cache, no-store";
+    return Results.Text(hls.Playlist(), "application/vnd.apple.mpegurl", Encoding.UTF8);
+});
+
+app.MapGet("/hls/{user}/{pass}/{id:int}/{seq:long}.ts", async (HttpContext ctx, string user, string pass, int id, long seq) =>
+{
+    ctx.Response.Headers.AccessControlAllowOrigin = "*";
+    if (!Authed(user, pass)) return Results.Unauthorized();
+    var hls = await hub.HlsAsync(id, "Cast device", start: false, ctx.RequestAborted);
+    var seg = hls?.Get(seq);
+    if (seg is null) return Results.NotFound();
+    hls!.Touch();
+    return Results.Bytes(seg.Data, "video/mp2t");
+});
+
 // ---- VOD / series / catch-up passthrough (takes the single slot, supports seeking) -------------
 
 async Task ServeVod(HttpContext ctx, string kind, string key, string name, string upstreamUrl)
@@ -471,7 +499,8 @@ app.MapGet("/api/status", () =>
             connectedAt = live.ConnectedUtc,
             megabytesIn = Math.Round(live.BytesIn / 1048576.0, 1),
             reconnects = live.Reconnects,
-            viewers = live.SubscribersSnapshot().Select(s => new { who = s.Who, since = s.SinceUtc }),
+            viewers = live.SubscribersSnapshot().Select(s => new { who = s.Who, since = (DateTime?)s.SinceUtc })
+                .Concat(live.Hls?.Active == true ? new[] { new { who = "Chromecast / Cast device (HLS)", since = (DateTime?)live.Hls.LastAccessUtc } } : Array.Empty<object>().Select(_ => new { who = "", since = (DateTime?)null })),
         },
         syncClients = sync.Clients,
         cache = provider.CacheSummary(),

@@ -103,6 +103,10 @@ The hub sends these to the TV:
 {"type":"favorites","live":[101,102],"vod":[],"series":[]}
 ```
 
+The hub also sends `{"type":"welcome","id":"…"}`, a `{"type":"devices","devices":[{id,device,kind}]}` list
+whenever an app connects or disconnects, `{"type":"castPlay","streamId":101,"from":"…"}` to the chosen TV, and
+`{"type":"castResult","ok":true,"target":"Lounge TV"}` back to the phone.
+
 The current state and favourites are sent as soon as a TV connects. Ignore any state whose
 `version` is lower than the last one you saw.
 
@@ -113,6 +117,8 @@ The TV sends these to the hub:
 {"cmd":"play","streamId":101}     // switch everyone (optional: requesting the .ts URL does this too)
 {"cmd":"stop"}                    // everyone leaves the player
 {"cmd":"getState"}  {"cmd":"ping"}
+{"cmd":"hello","device":"Brent's phone","kind":"phone"}   // kind: tv | phone
+{"cmd":"cast","target":"<device id>","streamId":101}      // phone → "play this on that TV"
 ```
 
 What the TV app should do:
@@ -132,6 +138,14 @@ channel name (`UK: SKY SPORTS F1 FHD` ⇔ `Sky Sports F1 HD`). The **Guide match
 channel's guide comes from. From there you can pick the right public channel by hand, put a channel back to
 automatic matching, or set it to "no guide". It asks for the TV password, and your choices are saved in
 `data\epg-map.json`. Event-only channels such as FloRugby have no public guide.
+
+### HLS for Chromecast / Google Cast
+
+`GET /hls/{user}/{pass}/{streamId}/index.m3u8` returns a live HLS playlist of the same relay, cut into roughly
+4-second segments at keyframes, with each segment prefixed with PAT/PMT. There's no decoding or encoding. The
+first request switches the hub to that channel, just as a TV does, and waits a few seconds for the first
+segments. A Cast device fetching the playlist counts as a viewer. Responses include
+`Access-Control-Allow-Origin: *` for the Cast receiver.
 
 ### 3. EPG worked out on the hub
 

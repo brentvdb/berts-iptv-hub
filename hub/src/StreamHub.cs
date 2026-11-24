@@ -129,6 +129,31 @@ public sealed class StreamHub : IDisposable
         Publish();
     }
 
+    /// <summary>
+    /// HLS for a Cast device. start = true (playlist request) switches the hub to this channel like any TV would;
+    /// start = false (segment request) only serves the channel that's already playing.
+    /// </summary>
+    public async Task<HlsSegmenter?> HlsAsync(int id, string who, bool start, CancellationToken ct)
+    {
+        ChannelInfo? info = start ? await LookupAsync(id, ct) : null;
+        HlsSegmenter hls;
+        bool started = false;
+        lock (_gate)
+        {
+            if (_live is null || _live.StreamId != id || _live.Ended)
+            {
+                if (!start || info is null) return null;
+                StopAllLocked(_live is null && _vod is null ? null : "switched");
+                _live = StartLocked(info, who);
+                started = true;
+            }
+            hls = _live.EnableHls();
+            hls.Touch();
+        }
+        if (started) Publish();
+        return hls;
+    }
+
     public void Unsubscribe(Subscriber s)
     {
         s.Session.RemoveSubscriber(s);

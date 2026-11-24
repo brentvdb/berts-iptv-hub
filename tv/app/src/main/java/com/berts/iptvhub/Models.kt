@@ -37,3 +37,6 @@ data class HubState(
     val isLive: Boolean get() = mode == "live" && streamId != null
     val isIdle: Boolean get() = mode == "idle"
 }
+
+/** Another app connected to the hub (from the sync "devices" list). kind: "tv" | "phone" | "unknown". */
+data class HubDevice(val id: String, val name: String, val kind: String)

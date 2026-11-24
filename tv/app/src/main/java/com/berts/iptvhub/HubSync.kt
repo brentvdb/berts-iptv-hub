@@ -14,17 +14,27 @@ import java.util.concurrent.TimeUnit
  * Live connection to the hub's /sync WebSocket. Every TV gets the same "now playing" state and
  * favourites; any TV can send play/stop. Reconnects automatically.
  */
-class HubSync(private val config: HubConfig, private val api: HubApi) {
+class HubSync(private val config: HubConfig, private val api: HubApi, private val kind: String) {
 
     interface Listener {
         fun onState(state: HubState) {}
         fun onFavorites(ids: List<Int>) {}
         fun onConnection(connected: Boolean) {}
+        /** Apps connected to the hub (for "Cast to Lounge TV"). */
+        fun onDevices(devices: List<HubDevice>) {}
+        /** A phone asked this TV to play a channel. */
+        fun onCastPlay(streamId: Int, from: String) {}
+        fun onCastResult(ok: Boolean, target: String) {}
     }
 
     @Volatile var state: HubState? = null
         private set
     @Volatile var connected: Boolean = false
+        private set
+    @Volatile var devices: List<HubDevice> = emptyList()
+        private set
+    /** This app's id on the hub (so a phone doesn't list itself). */
+    @Volatile var myId: String? = null
         private set
 
     private val main = Handler(Looper.getMainLooper())
@@ -66,6 +76,12 @@ class HubSync(private val config: HubConfig, private val api: HubApi) {
 
     fun stop(): Boolean = send(JSONObject().put("cmd", "stop"))
 
+    /** Phone → "play this channel on that TV". */
+    fun cast(targetId: String, streamId: Int): Boolean =
+        send(JSONObject().put("cmd", "cast").put("target", targetId).put("streamId", streamId))
+
+    fun tvs(): List<HubDevice> = devices.filter { it.kind == "tv" && it.id != myId }
+
     private fun send(json: JSONObject): Boolean = socket?.send(json.toString()) ?: false
 
     private fun connect() {
@@ -83,7 +99,7 @@ class HubSync(private val config: HubConfig, private val api: HubApi) {
                     if (gen != generation) return@post
                     backoffMs = 1000L
                     connected = true
-                    webSocket.send(JSONObject().put("cmd", "hello").put("device", config.deviceName).toString())
+                    webSocket.send(JSONObject().put("cmd", "hello").put("device", config.deviceName).put("kind", kind).toString())
                     listeners.forEach { it.onConnection(true) }
                 }
             }
@@ -101,6 +117,21 @@ class HubSync(private val config: HubConfig, private val api: HubApi) {
                                 listeners.forEach { it.onState(s) }
                             }
                         }
+                        "welcome" -> { myId = json.optString("id").takeIf { it.isNotBlank() } }
+                        "devices" -> {
+                            val arr = json.optJSONArray("devices")
+                            val list = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                                HubDevice(o.optString("id"), o.optString("device", "TV"), o.optString("kind", "unknown"))
+                            }
+                            devices = list
+                            listeners.forEach { it.onDevices(list) }
+                        }
+                        "castPlay" -> {
+                            val id = json.optInt("streamId", -1)
+                            if (id >= 0) listeners.forEach { it.onCastPlay(id, json.optString("from", "a phone")) }
+                        }
+                        "castResult" -> listeners.forEach { it.onCastResult(json.optBoolean("ok"), json.optString("target", "TV")) }
                         "favorites" -> {
                             val arr = json.optJSONArray("live")
                             val ids = if (arr == null) emptyList() else (0 until arr.length()).map { arr.optInt(it) }
