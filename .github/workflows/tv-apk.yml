@@ -1,0 +1,75 @@
+name: TV app APK (Android)
+
+# Builds "BertsIptvHub-TV-<version>.apk" from the repo's VERSION file (shared with the hub).
+# The APK is signed with the fixed key in tv/signing, so each build installs over the previous one.
+# - Every push that touches tv/ → downloadable build artifact.
+# - Run manually with "Publish a GitHub release" ticked → APK added to release v<version>.
+
+on:
+  push:
+    paths:
+      - 'tv/**'
+      - 'VERSION'
+      - '.github/workflows/tv-apk.yml'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a GitHub release (tag v<version>)'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Read version
+        id: ver
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "TV app version $v, build ${{ github.run_number }}"
+
+      - name: Build release APK
+        working-directory: tv
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: gradle :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Name APK with version
+        run: |
+          mkdir -p out
+          cp tv/app/build/outputs/apk/release/app-release.apk "out/BertsIptvHub-TV-${{ steps.ver.outputs.version }}.apk"
+          ls -la out
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BertsIptvHub-TV-${{ steps.ver.outputs.version }}-build${{ github.run_number }}
+          path: out/BertsIptvHub-TV-${{ steps.ver.outputs.version }}.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Bert's IPTV Hub v${{ steps.ver.outputs.version }}
+          files: out/BertsIptvHub-TV-${{ steps.ver.outputs.version }}.apk

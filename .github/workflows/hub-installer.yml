@@ -1,0 +1,88 @@
+name: Hub installer (Windows)
+
+# Builds "BertsIptvHub-Setup-<version>.exe" from the repo's VERSION file (shared with the TV app).
+# - Every push that touches hub/ → downloadable build artifact (Actions → this run → Artifacts).
+# - Run manually with "Publish a GitHub release" ticked → release v<version> (the TV app workflow adds its APK to the same release).
+
+on:
+  push:
+    paths:
+      - 'hub/**'
+      - 'VERSION'
+      - '.github/workflows/hub-installer.yml'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a GitHub release (tag v<version>)'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must look like 1.2.3 (got '$v')" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Hub version $v, build ${{ github.run_number }}"
+
+      - name: Publish self-contained BertsIptvHub.exe
+        shell: pwsh
+        run: >
+          dotnet publish hub/src/BertsIptvHub.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:BuildNumber=${{ github.run_number }}
+          -o hub/publish
+
+      - name: Check exe version
+        shell: pwsh
+        run: |
+          $info = (Get-Item hub/publish/BertsIptvHub.exe).VersionInfo
+          Write-Host "FileVersion $($info.FileVersion)  ProductVersion $($info.ProductVersion)"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' "/DAppVersion=${{ steps.ver.outputs.version }}" "/DBuildNumber=${{ github.run_number }}" hub/installer/BertsIptvHub.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem hub/output
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: BertsIptvHub-Setup-${{ steps.ver.outputs.version }}-build${{ github.run_number }}
+          path: hub/output/BertsIptvHub-Setup-${{ steps.ver.outputs.version }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Bert's IPTV Hub v${{ steps.ver.outputs.version }}
+          body: |
+            **Server PC:** run `BertsIptvHub-Setup-${{ steps.ver.outputs.version }}.exe` (upgrades keep your settings and favourites).
+            **TVs:** install `BertsIptvHub-TV-${{ steps.ver.outputs.version }}.apk` on each Android TV box.
+          files: hub/output/BertsIptvHub-Setup-${{ steps.ver.outputs.version }}.exe

@@ -1,0 +1,20 @@
+# Hub server (.NET)
+hub/src/bin/
+hub/src/obj/
+hub/src/data/
+hub/publish/
+hub/output/
+hub/tests/*.ts
+
+# TV app (Android)
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+*.apk
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
